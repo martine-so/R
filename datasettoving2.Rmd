@@ -1,0 +1,403 @@
+---
+title: "Datasettøving 2: Tarmflora blant mødre og barn"
+author: "Martine Sørgård Olsen og Karin Mollatt"
+date: "2022-11-03"
+output: html_document
+---
+<style type="text/css"> body .main-container { max-width: 90%; } </style>
+
+#### **Innledning** 
+
+Tarmfloraen til oss mennesker omhandler de bakteriene og mikroorganismene som tarmen vår består av. I denne rapporten skal vi studere tarmfloraen hos mødre og tilhørende barn gjennom data fra DNA/RNA-sekvensering av avføringsprøvene deres. Slik skal vi svare på spørsmålet: <span style="color: darkblue;font-size: 16px;"><i>Når får barn en tarmflora som ligner på den vi ser hos voksne?</i></span>
+
+<span style="color: grey;font-size: 14px;"><i>Laster inn datasettet, og nødvendige pakker ved start.</i></span>
+
+```{r pakker og datasett, message=FALSE}
+library(tidyverse)
+library(readxl)
+library(pheatmap)
+library(dichromat)
+library(ggplot2)
+
+
+data <- read_excel("mor_barn_tid_tarmflora.xlsx")
+```
+
+`data` inneholder 1124 rader og 1277 kolonner. 
+
+<span style="color: grey;font-size: 14px;"><i>For å bli bedre kjent med datarammen, ser vi på de seks første kolonnene.</i></span>
+
+```{r 2.1: 6 første kolonnene, comment=NA}
+# Her har vi fjernet #-tegnene som introduserer hver output ved hjelp
+# av comment=NA blant chunk options, for en mer estetisk rapport.
+
+data %>%
+  select(1:6) %>% # Henter ut de 6 første kolonnene
+  summary()
+```   
+
+Vi ser at:  
+
+- Hver observasjon består av en mor eller et barn.   
+- Kolonnene har ulike variabler:  
+  - `MotherChildPairID` er en ID som er unik for mor og tilhørende barn.  
+  - `MotherChild` kategoriserer om observasjonen er av mor eller barn.  
+  - `Timepoint` forteller når prøven er tatt. For mor er det tatt prøver under  graviditeten og 3 måneder etter. For barna er det tatt prøver etter 10 dager, 3 måneder, ett år og to år.  
+  - De resterende kolonnene er ulike typer bakterier, som inneholder antallet av hver art.  
+
+<span style="color: grey;font-size: 14px;"><i>Videre skal vi definerte meningsfylte "factor levels".</i></span>
+
+```{r 2.2: meningsfylte "factor levels", comment=NA}
+# Skriver ut de tre første verdiene av Timepoint og MotherChild
+data %>% 
+  select(Timepoint, MotherChild) %>% 
+  slice_head(n=3)
+
+data <- data %>%
+  # Gjør om variablene Timepoint og MotherChild til typen factor,
+  # og bruker levels til å angi den naturlige rekkefølgen
+  mutate(Timepoint = factor(Timepoint, 
+                            levels = c("Pregnancy", "10days", "3months",
+                                       "1year", "2years")),
+         MotherChild = factor(MotherChild,
+                              levels = c("mother", "child")))
+
+# Skriver ut de tre første verdiene etter omgjøringen
+data %>% 
+  select(Timepoint, MotherChild) %>% 
+  slice_head(n=3)
+```
+
+<span style="color: grey;font-size: 14px;"><i>For å unngå store beregninger når vi prøver kode, lager vi et redusert datasett.</i></span>
+
+```{r 2.3: definer lekedata, comment=NA}
+# Definerer et mindre datasett med kun de 6 første kolonnene for testing av kode
+leke_data <- data %>% 
+  select(1:6) %>% 
+  group_by(MotherChild, Timepoint) %>%
+  slice(1:3) %>% 
+  ungroup()
+leke_data
+```
+
+### 3: La oss telle bakterier
+
+#### **Hvor mange ulike taxa finnes i tarmfloraen til et individ?**
+
+```{r 3.1: Antall bakteriearter, message=FALSE, comment=NA}
+# Definerer en dataramme som inneholder antall bakteriearter i hvert individ
+leke_artsrikdom <- leke_data %>% 
+  gather(key = "art", value = "antall",
+         -c(MotherChildPairID, MotherChild, Timepoint)) %>% 
+  group_by(MotherChildPairID, MotherChild, Timepoint) %>% 
+  summarise(arter = sum(antall > 0))
+leke_artsrikdom
+
+artsrikdom <- data %>% 
+  gather(key = "art", value = "antall",
+         -c(MotherChildPairID, MotherChild, Timepoint)) %>% 
+  group_by(MotherChildPairID, MotherChild, Timepoint) %>% 
+  summarise(arter = sum(antall > 0))
+artsrikdom
+
+```
+
+#### **Hvordan endrer mangfoldet i tarmen seg over tid?**
+
+```{r 3.2.1: artsrikdom gjennomsnitt, message=FALSE, comment=NA}
+# Definerer en dataramme med gjennomsnittlig artsrikdom hos mor og barn
+leke_gjsn_artsrikdom <- leke_artsrikdom %>% 
+  group_by(MotherChild, Timepoint) %>% 
+  summarise(gjsn_arter = mean(arter))
+leke_gjsn_artsrikdom
+
+gjsn_artsrikdom <- artsrikdom %>% 
+  group_by(MotherChild, Timepoint) %>% 
+  summarise(gjsn_arter = mean(arter))
+gjsn_artsrikdom
+```
+
+Man kan se på outputen at gjennomsnittlig antall bakteriearter for barn øker jevnt med alderen, mens antallet for mødre holder seg stabilt under og etter graviditet.
+
+#### **Fordeling (boksplott)**
+
+```{r 3.2.2: Boxplot, fig.height=3, fig.width=6}
+# Plotter antall taxa i hver observasjonsgruppe i et boxplot
+artsrikdom %>% 
+  group_by(MotherChild, Timepoint) %>% 
+  ggplot(mapping = aes(x = Timepoint, y = arter, fill = MotherChild)) + 
+  geom_boxplot() + 
+  facet_grid(facets = vars(MotherChild), scales = "free", space = "free") + 
+  coord_flip()
+```
+
+Utifra boxplottet kan vi tydelig se at tidligere antatt mønster ser ut til å stemme. Gjennomsnittlig antall bakteriearter øker med alderen før det så ser ut til å stabilisere seg. Kurven kan minne om en eksponentiell økning. 
+
+#### **Hvilke taxa er mest vanlige?**
+
+```{r 3.3.1: Opptelling lekedata, eval=FALSE, include=FALSE}
+leke_forekomst <- leke_data %>% 
+  group_by(MotherChild, Timepoint) %>% 
+  summarise_at(vars(-MotherChildPairID), ~mean(. > 0))
+leke_forekomst
+```
+
+```{r 3.3.1: Opptelling data, comment=NA}
+# Grupperer data etter mor/barn og tidspunkt, og regner ut hvor stor andel av observasjonene som inneholder de ulike bakterieartene.
+forekomst <- data %>% 
+  group_by(MotherChild, Timepoint) %>% 
+  summarise_at(vars(-MotherChildPairID), ~mean(. > 0))
+forekomst
+```
+
+`forekomst` inneholder 6 rader, som representerer hver observasjonstidspunkt for mor og barn. Det vil si under graviditet og 3 måneder etter fødsel for mødrene, og 10 dager, 3 måneder, ett år og to år for barna.
+
+#### **Plotting**
+
+```{r 3.3.2: plotting av forekomst.lang, fig.height=2, fig.width=4, comment=NA}
+# Omstrukturer datarammen slik at artene samles i en kolonne med tilhørende verdier i en egen kolonnne.
+forekomst.lang <- forekomst %>% 
+  gather(key = "art", value = "andel_individer",
+         -c(MotherChild, Timepoint))
+forekomst.lang
+
+# Lagrer histogram plott av datarammen til en variabel for senere bruk, og viser så plottet
+phist <- forekomst.lang %>% 
+  ggplot(mapping = aes(x = andel_individer)) + 
+  geom_histogram(bins = 20)
+phist
+
+```
+
+#### **En nærmere titt på de vanligste artene**
+
+```{r 3.3.3: vanligst arter, comment=NA}
+# Finner bakteriearter som forekommer over 90% av individene i datasettet, og sorterer etter andel individer
+taxa_90 <- forekomst.lang %>% 
+  filter(andel_individer >= 0.90) %>% 
+  arrange(andel_individer)
+taxa_90
+```
+
+[*Faecalibacterium*](https://en.wikipedia.org/wiki/Faecalibacterium>Faecalibacterium) er en stavformet, tallrik bakterieart som utgjør mer enn 5% av bakteriene i tarmen. Den er også en viktig [kommensal](https://snl.no/kommensalisme) bakterie som betyr at den tar nytte av interaksjonen med en annen art uten at den andre bakteriearten blir påvirket.
+
+[*Streptococcus*](https://en.wikipedia.org/wiki/Streptococcus), bedre kjent som streptokokk på norsk, får nok de fleste til å tenke på halsbetennelse. I midlertid er mange streptokokkarter ikke farlige, og de utgjør en del av den kommensale menneskelige mikrobiotaen i munn, øvre luftveier, hud og tarm.
+
+[*Lachnospiraceae*](https://en.wikipedia.org/wiki/Lachnospiraceae) er også en av bakteriene som er blant de mest tallrike taxaene i den menneskelige tarmfloraen. De fermenterer forskjellige plantepolysakkarider til kortkjedede fettsyrer (butyrat, acetat) og alkoholer (etanol).
+
+#### **Plotting pr tid og mor/barn**
+
+```{r 3.3.4: Plott pr tid og mor eller barn, fig.height=4, fig.width=7}
+# Bygger på plottet som er definert tidligere, for å lage et histogram for hver observasjonsgruppe
+plott_tid_mor_barn <- phist + 
+  facet_grid(rows = vars(MotherChild), cols = vars(Timepoint))
+plott_tid_mor_barn
+```
+
+De høye stolpene til venstre i hvert plott kommer av at det finnes mange bakteriearter som kun en liten andel individer innehar.
+
+Tallene på `count`-aksen viser antall observasjoner i form av mor eller barn. 
+
+Forekomst-mønsteret endrer seg ved at histogrammet blir jevnere fordelt når alderen øker, og vil til slutt nærme seg en negativ eksponentiell kurve. Biologisk betyr dette at det blir færre bakteriearter som få individer innehar. Det kan ha noe med at i løpet av de 10 første dagene vil et barn mest sannsynlig kun oppholde seg med mor og far. Der vil de bli passet godt på og kun bli utsatt for en begrenset mengde bakterier. Etter ett år eller to vil barnet ha kommet i kontakt med mange flere bakteriearter, som gjør at kurven vil flate seg ut.
+
+Noen fasetter er helt uten observasjoner fordi at `mother` kun er målt ved svangerskap og tre måneder etter fødsel, mens `child` er målt ved alle tidspunktene med unntak av ved svangerskap. 
+
+#### **Bakterier som ikke forekommer i datasettet**
+
+```{r 3.3.5: Nullbakterier, comment=NA}
+# Velger ut bakteriearter som kun har nullverdier
+nullbakt <- data %>% 
+  select(where(function(x) is.numeric(x) && all(x == 0))) %>% 
+  names()
+nullbakt
+
+# Fjerner bakterier som ikke forekommer i noen observasjoner
+data <- data %>% 
+  select(-!!nullbakt)
+# Printer dimensjonen av datarammen
+dim(data)
+```
+
+Dimensjonen på `data` er nå 1124x1271 i motsetning til den tidligere dimensjonen 1124x1277. Det er fordi vi har fjernet de 6 taxa (oppført som kolonner) som ikke forekommer i noen observasjoner.
+
+### 4: Kvantitative data - fra telling til multivariat analyse
+
+#### **Normalisering**
+
+```{r 4.1: Normalisering, comment=NA, fig.height=2, fig.width=5}
+# Fjerner de 3 første kolonnene som ikke inneholder tallverdier
+data.norm.tallverdier <- data[,-(1:3)]
+
+# Normaliserer verdiene i datarammen
+clr <- log2(data.norm.tallverdier + 1) - 
+  apply(log2(data.norm.tallverdier + 1), 1, mean)
+
+# Legger til de 3 første kolonnene som identifiserer prøvene
+data.norm <- bind_cols(data[,1:3], as_tibble(clr))
+data.norm
+
+# Histogram
+data.norm %>% 
+  gather(key = "art", value = "centered_log_ratio",
+         -c(MotherChildPairID, MotherChild, Timepoint)) %>% 
+  ggplot(mapping = aes(x = centered_log_ratio)) + 
+  geom_histogram(bins = 100)
+```
+
+Disse dataene er kvantitative og måler "antall bakterier" fra hvert taxon. Likevel kan vi ikke sammenlikne de fordi det er ulikt antall reads fra hver prøve. For å kunne gjøre dette transformerer vi dataene gjennom 2 operasjoner:
+
+1. Først gjennomfører vi en  log2-transformasjon slik at alle verdiene blir log2-verdier som er lettere å tolke i hodet enn naturlige logaritmer. Denne transformasjonen vektlegger *relativ* variasjon der en økning med én log2-enhet vil være en dobling av den opprinnelige verdien. Siden verdiene våre ikke har et absolutt nullpunkt legger vi til 1 for å unngå at nullverdiene blir ubrukelige (log2(x)= - <span>&#8734;</span>). 
+2. Videre trekker vi fra gjennomsnittet av log2-verdien til alle verdiene i den raden/observasjonen. Dette kalles *sentrering* av dataene, og det gjør at gjennomsnittet til hver rad etter normalisering blir lik null.
+
+Vi ser på histogrammet at transformeringen støtter antakelsen om at det er mange bakteriearter som få barn innehar. Samtidig ser vi også at histogrammet har stolper høyere opp på skalaen, da dette representerer bakteriene som mange personer besitter.
+
+#### **Prinsipalkomponentanalyse (PCA)**
+
+```{r 4.2: PCA og plott 1, fig.height=4, fig.width=6}
+# Kjører en Principal Component Analysis
+pca.res <- prcomp(data.norm[,-(1:3)])
+data.pca <- bind_cols(data.norm[,1:3], as_tibble(pca.res$x))
+
+# Plotter tarmprøvene
+data.pca %>% 
+  ggplot(mapping = aes(x = PC1, y = PC2, color = MotherChild)) +
+  geom_point()
+```
+
+På plottet kan man se at punktene til mor og barn overlapper noe, og dette kan tyde på en korrelasjon mellom disse datapunktene.
+
+Det finnes to hypoteser om når barn får en "voksen" tarmflora: under/rett etter fødselen eller betydelig senere.
+
+```{r 4.2: PCA plott 2, fig.height=4, fig.width=6}
+data.pca %>% 
+  ggplot(mapping = aes(x = PC1, y = PC2, color = Timepoint, 
+                       shape = MotherChild)) +
+  geom_point()
+```
+
+<span style="color: darkblue;font-size: 16px;"><i><b>Når får barn en tarmflora som ligner på den vi ser hos voksne?</b></i></span>
+
+På plottet ser man at der punktene fra barn (<span>&#9650;</span>) møter punktene fra mor (<span>&#9679;</span>) er når trekantene er <span style="color: magenta;">rosa</span>, altså tilsvarende en alder på 2 år. Det vil si at barn får en tarmflora som ligner på den vi ser hos voksne rundt 2 års alder.
+
+```{r 4.2: topp 10 taxa PC1, comment=NA}
+loadings <- as_tibble(pca.res$rotation, rownames = "art")
+
+# Topp 10 taxa som bidrar mest til PC1 (usortert)
+loadings %>% 
+  top_n(10, abs(PC1)) %>% 
+  select(1:2)
+```
+
+Det er seks bakteriearter her som går igjen blant de som fantes i 90% av folkene. De er: 
+
+- *Ruminococcaceae.3*
+- *Bifidobacterium.8*
+- *Faecalibacterium*
+- *Ruminococcaceae.2*
+- *Lachnospiraceae.1*
+- *Faecalibacterium.1*
+
+*Lachnospiraceae.1* og *Faecalibacterium* er skrevet om tidligere i rapporten.
+
+[*Bifidobacterium.8*](https://bramat.no/verktoy/436-bifidobacterium) er en av de viktigste slektene av bakterier som utgjør mikrobiotaen i mage-tarmkanalen hos pattedyr^[1](https://en.wikipedia.org/wiki/Bifidobacterium)^. Den produserer melkesyre ut av sukker, da det er en melkesyrebakterie som også kan brukes som probiotika i f.eks. melkesyrnede produkter.
+
+[*Ruminococcus.1*](https://pubmed.ncbi.nlm.nih.gov/29492877/) er en bakterieslekt under klassen Clostridia, og en eller flere arter av denne finnes i betydelig antall i menneskets tarmflora^[2](https://en.wikipedia.org/wiki/Ruminococcus)^. Bakteriearten bryter ned og omdanner polysakkarider til næringsstoffer.
+
+[*Bacteroides.8*](https://sml.snl.no/Bacteroides) er en slekt som utgjør en stor del av tarmfloraen og kan forårsake ulike infeksjoner.
+
+```{r 4.2: Topp 10 taxa PC2, comment=NA}
+# Topp 10 taxa som bidrar mest til PC2 (usortert)
+loadings %>% 
+  top_n(10, abs(PC2)) %>% 
+  select(c(1,3))
+```
+
+Det taxonet som har størst bidrag til PC1, og som derfor er viktigst, er *Lachnospiraceae.1*. For PC2 er det viktigste taxonet *Blautia*. Dersom du plotter disse to mot hverandre, vil du få dette plottet.
+
+```{r 4.2: Plott mot hverandre, fig.height=4, fig.width=6, comment=NA}
+# Plotter viktigste taxon i PC1 og i PC2 mot hverandre, og kategoriserer farge etter tidspunkt og form etter mor/barn.
+data.norm %>% 
+  ggplot(mapping = aes(x = Lachnospiraceae.1, y = Blautia,
+                       color = Timepoint, shape = MotherChild)) +
+  geom_point()
+```
+
+På plottet er det en jevn spredning av alle datapunktene, som ikke viser noen form for mønster.
+
+```{r 4.2: varians forklart, fig.height=3, fig.width=5, comment=NA}
+# Skriver ut "varians forklart" for de 10 første PCene
+eigs <- pca.res$sdev^2
+var.forklart <- eigs / sum(eigs)
+var.forklart[1:10]
+
+# Plotter kumulativ fordeling av varians forklart av alle PCene
+ggplot(data.frame(PC = 1:length(var.forklart), 
+                  VariansForklart = cumsum(var.forklart)), 
+       aes(x = PC, y = VariansForklart)) +
+  geom_line()
+```
+
+I en prinsipalkomponentanalyse er målet at PCene skal forklare så mye varians som mulig. Det vil si at PC1 forklarer absolutt mest varians, PC2 nest mest osv. På plottet som viser varians forklart ser vi at de to første PCene kun forklarer rundt 20% av variansen i dataene. Dette betyr at det finnes flere PCer som forklarer en betydelig del av variansen. Likevel gir det oss et klart bilde av hvordan tarmfloraen hos mor og barn utvikles over tid, fordi en økning på 20% på kun to PCer tyder på en eksponentiell økning.
+
+### 4.3: Heatmap
+
+```{r 4.3: Heatmap, comment=NA}
+data.norm.m <- data.norm[,-(1:3)] %>% as.matrix()
+rad_annotering <- data.norm[,2:3] %>% as.data.frame()
+
+rownames(data.norm.m) <- 1:nrow(data.norm.m)
+rownames(rad_annotering) <- 1:nrow(rad_annotering)
+
+# De tre første radene og kolonnene
+data.norm.m[1:3,1:3]
+
+```
+
+```{r 4.3: Prøve heatmap, eval=FALSE, include=FALSE}
+# Heatmap
+pheatmap(data.norm.m[1:3,1:3], 
+         color = colorRampPalette(c("white","red"))(50),
+         border_color = NA,
+         cluster_rows = FALSE, cluster_cols = FALSE, 
+         show_rownames = FALSE, show_colnames = FALSE, 
+         annotation_row = rad_annotering,
+         display_numbers = TRUE)
+
+# Heatmap der dataen er omstokket
+pheatmap(data.norm.m[1:3,1:3], 
+         color = colorRampPalette(c("white","red"))(50),
+         border_color = NA,
+         cluster_rows = TRUE, cluster_cols = TRUE,
+         clustering_method = "ward.D",
+         show_rownames = FALSE, show_colnames = FALSE, 
+         annotation_row = rad_annotering,
+         display_numbers = TRUE)
+```
+
+```{r fig.width=11}
+# Heatmap
+pheatmap(data.norm.m, 
+         color = colorRampPalette(c("white","red"))(50),
+         border_color = NA,
+         cluster_rows = FALSE, 
+         cluster_cols = FALSE, 
+         show_rownames = FALSE, 
+         show_colnames = FALSE, 
+         annotation_row = rad_annotering,
+         display_numbers = FALSE)
+```
+
+
+```{r 4.3: Heatmap omstokket plott, fig.width=12}
+# Heatmap der dataen er omstokket
+pheatmap(data.norm.m, 
+         color = colorRampPalette(c("white","red"))(50),
+         border_color = NA,
+         cluster_rows = TRUE, cluster_cols = TRUE,
+         clustering_method = "ward.D",
+         show_rownames = FALSE, show_colnames = FALSE, 
+         annotation_row = rad_annotering,
+         display_numbers = FALSE)
+```
+
+Heatmapet viser en fordeling der bakterieartene blir delt inn i to hovedgrupper, der hovedgruppe nr.2 (til høyre) forekommer hyppigst. Videre blir hovedgruppe 2 delt inn i to undergrupper, der den første undergruppen (til venstre) er den som forekommer absolutt mest blant alle bakterieartene.

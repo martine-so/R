@@ -1,0 +1,469 @@
+---
+title: 'Datasettøving 1: Hvor rusler reven?'
+author: "Karin Mollatt og Martine Sørgård Olsen"
+date: "2022-10-10"
+output: html_document
+---
+<style type="text/css"> body .main-container { max-width: 90%; } </style>
+
+<span style="color: grey;"><i>Laster inn datasettet, og nødvendige pakker ved start.</i></span>
+
+```{r pakker og datasett, message=FALSE}
+library(tidyverse)
+library(sp)
+library(sf)
+library(leaflet)
+
+load("foxdata_STIN100.RData")
+
+# Skrur av spherical geometry
+sf::sf_use_s2(FALSE)
+```
+
+## 3: Lasting og bruk av GPS-data
+
+<span style="color: grey;"><i>Print hvert av disse objektene og beskriv hva dere tror de inneholder.</i></span>
+
+```{r printe objekter: foxes}
+# Printer datarammen foxes
+foxes
+# Printer de unike IDene til revene
+unique(foxes$id)
+```
+
+Datarammen *foxes* inneholder GPS-observasjoner av sju ulike rever. Den har tre variabler: `id`, `datetime` og `geometry`.
+
+- `id`: Nummer på hvilken rev det er, i den rekkefølgen de ble merket.
+- `datetime`: Dato og tid for observasjonen
+- `geometry`: Koordinater for observasjonen
+
+```{r printe objekter: fox7}
+# Printer datarammen fox7
+fox7
+```
+
+Datarammen *fox7* inneholder hyppigere GPS-observasjoner av rev nummer 7 - [Lucky Number Slevin](https://en.wikipedia.org/wiki/Lucky_Number_Slevin). Den har fem variabler: `id`, `datetime`, `n.sats`, `battery.pcnt` og `geometry`. De variablene som er ulike fra *foxes*-datarammen er:
+
+- `n.sats`: Denne variabelen inneholder verdiene fra 4 til 14 i denne datarammen. Uten noen videre informasjon har vi ikke nok kunnskap om datasettet til å konkludere hva variabelen beskriver.
+- `battery.pcnt`: Batteriprosent på GPS-halsbåndet
+
+```{r printe objekter: fox7.utm}
+# Printer datarammen fox7.utm
+fox7.utm
+```
+
+Datarammen *fox7.utm* er identisk som *fox7* utenom variabelen `geometry`. Forskjellen er at GPS-punktet i denne datarammen er angitt ved UTM-koordinater, mens GPS-punktet i datarammen *foxes* er angitt ved lengde- og breddegrader
+<span style="font-size:0.8em;">Kilde: <a href=https://snl.no/UTM>UTM</a> (Lest 10.10.2022)</span>  
+
+```{r printe objekter: ar5}
+# Printer datarammen ar5
+ar5
+```
+
+Datarammen *ar5* er et arealressurskart for området, som kan brukes som en bakgrunn når vi plotter observasjonene. Den inneholder variablene: `artype`, `artreslag`, `artype_artreslag`, `coarse.type` og `geometry`.
+
+- `artype`: Arealtypen i siffer i området (f.eks: 30 (forest), 12 (road) , 81 (water))
+- `artreslag`: Type treslag i siffer i området (f.eks: 32, 39, 98)
+- `artype_artreslag`: Kombinasjon av `artype` og `artreslag` delt av bindestrek (f.eks: 30-32, 50-39)
+- `coarse.type`: Arealtypen i området (f.eks: forest, road, water)
+- `geometry`: Koordinater for observasjonen
+
+### 3.1: En nærmere titt på `foxes` med `library(leaflet)`
+
+```{r 3.1: En nærmere titt på foxes}
+# Lag en funksjon som oversetter reve-navn til farge.
+pal <- colorFactor(palette = "Set1", domain = foxes$id)
+
+foxes %>%                             # Ta reveposisjonene, og:
+  leaflet %>%                         # Lag interaktivt kart
+  addTiles %>%                        # Legg på grunnslagskart
+  addCircleMarkers(color = ~pal(id))  # Legg på posisjonsmerker farget etter rev
+
+```
+
+### 3.2: Romlige data i library(sf)
+
+Et romlig objekt er i dette tilfellet punktene vi ser på kartet. Det vil si hver enkelt GPS-observasjon av revene. 
+
+```{r 3.2: prøv, eval=FALSE, include=FALSE}
+# Denne kodechunken blir ikke kjørt ved strikking av rapporten,
+# fordi vi kun tester ulike funksjoner i koden.
+fox7[1:2, c("id", "datetime")]
+```
+
+```{r 3.2: plot foxes, fig.height=3}
+# Ser på hele datasettet
+plot(foxes)
+# Ser på kun én attributt
+plot(foxes["id"], pch = 19)
+```
+
+### 3.3: Koordinatsystemer og plotting av romlige objekter
+
+```{r 3.3: plot}
+# Lagrer plottene i hver sin variabel
+foxes_plot <- ggplot(foxes, aes(colour = id)) + 
+  geom_sf() +
+  ggtitle("foxes")
+foxes_utm_plot <- ggplot(foxes.utm, aes(colour = id)) + 
+  geom_sf() +
+  ggtitle("foxes.utm")
+
+# Legger plottene ved siden av hverandre, for å enklere kunne sammenlikne
+# Kode sterkt inspirert fra: https://stackoverflow.com/questions/1249548/side-by-side-plots-with-ggplot2
+gridExtra::grid.arrange(foxes_plot, foxes_utm_plot, ncol=2)
+```
+
+Vi ser at de to plottene inneholder nøyaktig samme observasjonspunkter, slik som antatt. Derimot er koordinatsystemet ulikt, fordi `geometry`-variabelen er forskjellig i datarammene.  
+
+`geometri` i *foxes* er oppgitt i lengde- og breddegrader og derfor er koordinatssystemet tilnærmet rett. Plottet av *foxes.utm* har færre merker på x-aksen, som vil si at rutene i koordinatsystemet er større. Årsaken til dette er at geometrien er oppgitt som UTM-koordinater, og dette går ut på at du forsøker å lage et 2D kart av en jordklode (som er i 3D).
+
+## 5 Analyse av hjemmeområder og habitatseleksjon
+
+```{r 5: Anslå hjemmeområde, message=FALSE, warning=FALSE}
+# vi velger her å ikke vise meldinger og advarsler, for en ryddigere rapport.
+
+foxes.mcp <- foxes.utm %>% 
+  # mcp() forventer bare én attributt, nemlig individ-id
+  dplyr::select("id") %>%
+  # Konverter til gammeldags objekttype som mcp() trenger
+  as("Spatial") %>%
+  adehabitatHR::mcp(percent = 95) %>%
+  # Konverter tilbake til sf, som funker bedre med dplyr
+  st_as_sf %>% 
+  # Transformer til samme koordinatsystem som `foxes`
+  st_transform(st_crs(foxes))
+
+foxes.mcp %>% 
+  leaflet %>% 
+  addTiles %>% 
+  addPolygons(color = ~pal(id), weight=1, fillOpacity = 0.3) %>% 
+  addCircleMarkers(data = foxes, color = ~pal(id), weight = 2, radius = 7) %>% 
+  addLegend(pal = pal, values = ~id)
+
+# Sorterer alle rader i kolonnen area etter størrelse
+sort_foxes <- foxes.mcp[order(foxes.mcp$area),]
+sort_foxes
+```
+
+I følge [Store Norske Leksikon](https://snl.no/hjemmeomr%C3%A5de), er hjemmeområdet til et dyr et begrenset område som den selv eller familien anvender jevnlig.
+
+Fra outputen ser vi at `fox_12` (<span style="color: red;">rød</span>) har minst hjemmeområde og `fox_16` (<span style="color: purple;">lilla</span>) har størst hjemmeområde. 
+
+```{r 5: Plott foxes med 90 percent, warning=FALSE}
+# Fjerner advarsler i rapporten, for et ryddigere utseende.
+
+foxes.mcp_90 <- foxes.utm %>% 
+  # mcp() forventer bare én attributt, nemlig individ-id
+  dplyr::select("id") %>%
+  # Konverter til gammeldags objekttype som mcp() trenger
+  as("Spatial") %>%
+  adehabitatHR::mcp(percent = 90) %>%
+  # Konverter tilbake til sf, som funker bedre med dplyr
+  st_as_sf %>% 
+  # Transformer til samme koordinatsystem som `foxes`
+  st_transform(st_crs(foxes))
+
+foxes.mcp_90 %>% 
+  leaflet %>% 
+  addTiles %>% 
+  addPolygons(color = ~pal(id), weight=1, fillOpacity = 0.3) %>% 
+  addCircleMarkers(data = foxes, color = ~pal(id), weight = 2, radius = 7) %>% 
+  addLegend(pal = pal, values = ~id)
+```
+
+Det <span style="color: purple;">lilla</span> området som tilhører `fox_16` har synlig blitt mindre, ved å senke "minste konvekse polygon" (MCP) til 90%. Det gjør at estimatet er mindre følsomt for uteliggere (outliers) enn tidligere. 
+
+Videre har det <span style="color: brown;">brune</span> området som tilhører `fox_9` blitt litt mindre, men det er bare synlig fordi området kun sammenfaller med det lilla hjemmeområdet til `fox_16`. 
+
+Resten av områdene overlappes i stor grad av hverandre, som gjør det vanskelig å se med det blotte øyet om hjemmeområdet har endret størrelse. Det vi kan anta er at de fleste hjemmeområdene er litt mindre ved 90% enn ved 95%, fordi følsomheten er lavere. Likevel er det mengden uteliggere blant observasjonene som bestemmer om området minskes inn eller ikke.
+
+```{r 5: Plotte habitat med ggplot}
+foxes.utm %>% 
+  bind_cols(foxes.utm %>% 
+              st_coordinates %>% 
+              as.data.frame %>% 
+              set_names(c("m øst", "m nord"))) %>% 
+  ggplot(aes(x = `m øst`, y = `m nord`, color = id)) +
+  geom_density_2d(contour_var = "ndensity") + 
+  geom_point(alpha = 0.3) +
+  coord_equal() 
+
+```
+
+```{r 5: Plotte som en proff, include=FALSE}
+ud <- foxes %>% 
+  select(id) %>% 
+  as("Spatial") %>% 
+  adehabitatHR::kernelUD(same4all = TRUE, grid=500)
+
+image(ud$fox_7)
+foxes.mcp %>% 
+  filter(id == "fox_7") %>% 
+  select(geometry) %>% 
+  plot(max.plot = 1, add=TRUE)
+# pch = "plotting character", cex = "character expansion"
+foxes %>% 
+  filter(id == "fox_7") %>% 
+  select(geometry) %>% 
+  plot(add = TRUE, col = "black", pch=19, cex=0.6)
+
+vert <- adehabitatHR::getverticeshr(ud, percent = 95) %>% 
+  st_as_sf
+image(ud$fox_7)
+plot(vert["fox_7", "geometry"], add = TRUE, border = "white")
+
+ggplot(mapping = aes(colour = id)) + 
+  geom_sf(data = vert, fill = NA) + 
+  geom_sf(data = foxes)
+
+vert %>% 
+  leaflet %>% 
+  addTiles %>% 
+  addPolygons(weight = 1, color = ~pal(id)) %>% 
+  addCircleMarkers(data = foxes, color = ~pal(id), weight = 2, radius = 7) %>% 
+  addLegend(pal = pal, values = ~id)
+```
+
+### 5.1 Lasting av habitatdata og kobling til GPS-posisjon
+
+```{r 5.1: Plott hjemmeområde fox_13, message=FALSE, warning=FALSE}
+# vi velger her å ikke vise meldinger og advarsler, for en ryddigere rapport.
+
+fox13.mcp <- fox13.utm %>% 
+  # mcp() forventer bare én attributt, nemlig individ-id
+  dplyr::select("id") %>%
+  # Konverter til gammeldags objekttype som mcp() trenger
+  as("Spatial") %>%
+  adehabitatHR::mcp(percent = 95) %>%
+  # Konverter tilbake til sf, som funker bedre med dplyr
+  st_as_sf %>% 
+  # Transformer til samme koordinatsystem som `fox13`
+  st_transform(st_crs(fox13))
+
+fox13.mcp %>% 
+  leaflet %>% 
+  addTiles %>% 
+  addPolygons(color = ~pal(id), weight=1, fillOpacity = 0.3) %>% 
+  addCircleMarkers(data = fox13, color = ~pal(id), weight = 2, radius = 7) %>% 
+  addLegend(pal = pal, values = ~id)
+
+```
+
+`fox_13` er markert i <span style="color: blue;">blå</span> og den oppholder seg for det meste mellom Ås gård (langs Syverudveien) og Hundeskolen Veiviseren på Norderås (nordøst for Norderåsbekken). Samtidig dekker hjemmeområdet også noe nordøst for hundeskolen opp mot krysset mellom Kongeveien og Slørstadveien.
+
+Dette hjemmeområdet består i hovedsak av åkre, men også noe skog, vei, bebygget område og en bekk. I tillegg er det kun noen kilometer nord for campus, så her er det muligheter for å se rev på en sen søndagstur!
+
+```{r 5.1: Arealplott, eval=FALSE, include=FALSE}
+ar.pal <- colorFactor(c("khaki1","pink","chartreuse4","deeppink","deepskyblue1"), domain = ar5$coarse.type)
+
+ar5 %>% 
+  leaflet %>% 
+  addPolygons(stroke=FALSE, fillColor = ~ar.pal(coarse.type)) %>% 
+  addCircleMarkers(data = fox12, color = ~pal(id), weight = 2, radius = 7) %>% 
+  addLegend(pal = pal, values = ~id, data = fox12) %>% 
+  addLegend(pal = ar.pal, values = ~coarse.type)
+
+# Koden over ser ut til å fungere slik at man bruker arealressurskartet og
+# sender det inn i leaflet, slik at man kan legge til lag med punkter.
+# Arealressurskartet dekker kun et bestemt område, og derfor vises det grått
+# i plottet av områdene rundt som ikke inngår i kartet.
+# Videre er det lagt til lag med datapunkter som sirkler med fast størrelse
+# på skjermen. Til slutt er det lagt til legend-er som gir oss informasjon
+# til å lese plottet.
+```
+
+### 5.2 Hvordan varierer habitatbruken til hver rev gjennom døgnet?
+
+```{r 5.2: Habitatbruk, fig.height=6, fig.width=13, warning=FALSE,  message=FALSE}
+# Finner habitat for hver GPS-posisjon
+foxes.hab <- st_intersection(foxes, ar5)
+
+# Lager en ny kolonne som inneholder time, og lagrer det i en ny dataramme
+# for hvert plott
+foxes.lubri.time <- foxes.hab %>% 
+  mutate(time = lubridate::hour(datetime))
+
+foxes.hms.time <- foxes.hab %>% 
+  mutate(time = hms::as_hms(datetime))
+
+# Beholder fargene som er brukt tidligere
+# Kode sterkt inspirert fra: https://www.statology.org/color-by-factor-ggplot2/
+library(RColorBrewer)
+myColors_foxes <- brewer.pal(n = length(levels(foxes$id)),
+                             name = "Set1")
+names(myColors_foxes) <- levels(foxes$id)
+custom_colors_foxes <- scale_colour_manual(name = "id",
+                                           values = myColors_foxes)
+
+# Lagrer de to plottene til en variabel som vi kan hente senere
+hab.use1 <- ggplot(data = foxes.hms.time,
+                   mapping = aes(x = time,
+                                 y = coarse.type,
+                                 color = id,
+                                 group = id)) +
+  geom_jitter() +
+  # Vi vil se på hver rev, og "wrapper" derfor med hensyn på `id`
+  facet_wrap(facets = vars(id), 
+             ncol = 1, 
+             # Antall rader blir lik antall rever i datarammen
+             # Her kunne man også bare skrevet nrow = 7, men denne koden
+             # er mer generell.
+             nrow = length(levels(foxes.hms.time$id))) +
+  custom_colors_foxes
+
+hab.use2 <- ggplot(data = foxes.lubri.time,
+                   mapping = aes(x = time,
+                                 y = coarse.type,
+                                 color = id,
+                                 group = id)) +
+  # Gjør punktene gjennomsiktige, og regulerer størrelsen.
+  # Fjerner legend til plottet til høyre, fordi den følger samme fargekoder
+  # som plottet til venstre.
+  geom_jitter(alpha = 0.5, size = 2, show.legend = FALSE) +
+  facet_wrap(facets = vars(id)) + 
+  custom_colors_foxes
+
+# Legger plottene ved siden av hverandre
+gridExtra::grid.arrange(hab.use1, hab.use2, ncol=2)
+```
+
+På plottene kan man se at habitatbruken til `fox_7` er noe spredt mellom hovedsakelig skog, bebygget område og åkre.
+
+### 5.3 Foretrekker reven noen leveområder fremfor andre?
+
+```{r 5.3: Plotte habitatseleksjon fox_7, warning=FALSE,  message=FALSE}
+# Skaffer polygonet som angir 95% kernel home range.
+fox <- foxes.hab %>% filter(id == "fox_7")
+fox.vert <- adehabitatHR::getverticeshr(ud$fox_7, percent = 95) %>% 
+  st_as_sf
+
+# Null-modell-tilnærming
+
+# Trekker først en tilfeldig observasjon av rev 7
+random <- st_sample(fox.vert, nrow(fox))
+# Dette er foreløpig et såkalt "Geometry set", dvs bare punkter uten "attributer" (egenskaper). For å kunne gi egenskaper til punktene, må vi lage 
+# en "Simple feature collection" med st_sf().
+# Dessuten gir vi den en id-kolonne så vi senere kan skille den fra `fox` 
+# ovenfor, og så slår vi opp habitattype for hvert punkt med st_intersection, som over.
+random <- st_sf(geometry = random, id = "random", stringsAsFactors = FALSE) %>%
+  st_intersection(ar5)
+
+# Klipp ut den delen av arealressurskartet som overlapper med hjemmeområdet
+ar5.small <- st_intersection(fox.vert, ar5)
+
+# R colour cheat sheet:
+# https://www.nceas.ucsb.edu/~frazier/RSpatialGuides/colorPaletteCheatsheet.pdf
+fargeskala <- c(
+  "water" = "lightblue1",
+  "crop.pasture" = "khaki2",
+  "forest" = "forestgreen",
+  "developed" = "tan2",
+  "road" = "grey"
+)
+
+# Lagene plottes i den rekkefølgen de angis, så vi legger arealressurskartet i bunn
+ggplot() + 
+  geom_sf(data = ar5.small, mapping = aes(fill = coarse.type), colour = NA) +
+  geom_sf(data = random, colour = "blue") +
+  geom_sf(data = fox, colour = "white") +
+  scale_fill_manual(values = fargeskala)
+
+# Teller opp antall punkter i hver habitattype, separat for ekte og simulerte punkter
+begge <- bind_rows(as_tibble(fox), as_tibble(random))
+table(begge$id, begge$coarse.type)
+
+begge %>% 
+  count(id, coarse.type) %>% 
+  spread(coarse.type, n)
+```
+
+Habitatseleksjon er definert som "*hvor mye et habitat blir brukt i forhold til hvor tilgjengelig det er*" av Sam Perrin ved [Ecology for the Masses](https://ecologyforthemasses.com/2019/05/14/hvorfor-er-dyr-hvor-de-er/).
+
+Tallene over forteller oss at rev 7 velger å oppholde seg for det meste i skog, på åkre og i bebygget område. Denne kombinasjonen passer fint med en hypotese om at den sover i skogen, jakter på åkre og finner søppel den kan spise i bebygget område. 
+
+Likevel kan man legge merke til at det er flere observasjoner i bebygget område enn det er på åkre. Dette kan tyde på at reven får en større del av kostholdet sitt fra søppel eller lignende fra oss mennesker, fordi det er lett tilgjengelig.
+
+### 5.4 I revens fotspor på NMBU: visualisering av romlige data i Google Earth eller Google Maps
+
+```{r 5.4: Skrive til KML-fil, message=FALSE, warning=FALSE}
+# Konvertere fox7 fra en samling punkter til en LINESTRING simple feature
+# https://github.com/r-spatial/sf/issues/692#issuecomment-377671101
+fox7.line <- fox7 %>% 
+  summarise(do_union = FALSE) %>% 
+  st_cast("LINESTRING")
+# Må også konvertere til gammeldags sp-objekt istedenfor sf
+fox7.line %>% 
+  as("Spatial") %>% 
+  plotKML::kml(file.name = "fox7.kml", 
+               colour = "orange", 
+               shape = 'http://maps.google.com/mapfiles/kml/pal2/icon18.png', 
+               size = 0.3)
+
+# Konvertere fox12 fra en samling punkter til en LINESTRING simple feature
+# https://github.com/r-spatial/sf/issues/692#issuecomment-377671101
+fox12.line <- fox12 %>% 
+  summarise(do_union = FALSE) %>% 
+  st_cast("LINESTRING")
+# Må også konvertere til gammeldags sp-objekt istedenfor sf
+fox12.line %>% 
+  as("Spatial") %>% 
+  plotKML::kml(file.name = "fox12.kml", 
+               colour = "orange", 
+               shape = 'http://maps.google.com/mapfiles/kml/pal2/icon18.png', 
+               size = 0.3)
+
+# Konvertere fox13 fra en samling punkter til en LINESTRING simple feature
+# https://github.com/r-spatial/sf/issues/692#issuecomment-377671101
+fox13.line <- fox13 %>% 
+  summarise(do_union = FALSE) %>% 
+  st_cast("LINESTRING")
+# Må også konvertere til gammeldags sp-objekt istedenfor sf
+fox13.line %>% 
+  as("Spatial") %>% 
+  plotKML::kml(file.name = "fox13.kml", 
+               colour = "orange", 
+               shape = 'http://maps.google.com/mapfiles/kml/pal2/icon18.png', 
+               size = 0.3)
+
+# Konvertere fox14 fra en samling punkter til en LINESTRING simple feature
+# https://github.com/r-spatial/sf/issues/692#issuecomment-377671101
+fox14.line <- fox14 %>% 
+  summarise(do_union = FALSE) %>% 
+  st_cast("LINESTRING")
+# Må også konvertere til gammeldags sp-objekt istedenfor sf
+fox14.line %>% 
+  as("Spatial") %>% 
+  plotKML::kml(file.name = "fox14.kml", 
+               colour = "orange", 
+               shape = 'http://maps.google.com/mapfiles/kml/pal2/icon18.png', 
+               size = 0.3)
+```
+
+#### Kart
+
+Under ligger linker til Google Maps-kart som inneholder sporene til de utvalgte revene. Det andre kartet inneholder spor til 3 rever som ligger i lag, og du kan derfor velge å skjule disse lagene om du kun vil se på en av de.
+
+[Kart over sporet til rev 7 i Ås og omegn i februar 2018](https://www.google.com/maps/d/edit?mid=1bgfj2LF3-nw_qdpiggdRRaQRMe7xOoM&usp=sharing)
+
+[Kart over sporene til rev 12, 13 og 14 i Ås og omegn](https://www.google.com/maps/d/edit?mid=1L5bVp3EHhRSGtCSMrs-cE6l5pJJpXjI&usp=sharing)
+
+På kartet til de unge søskenrevene 12, 13 og 14 kan man se at de oppholder seg mest i området rundt Norderåsbekken, nord for Ås gård og sør for Hundeskolen Veiviseren. Dette området er en blanding av skog, bebygget område og åker. Som tidligere nevnt tror vi årsaken til dette er fordi revene kan beskytte og gjemme seg i skogen. Videre kan de nok jakte både på åkrene og i skogen, men at de også finner mat blant søppel som vi mennesker etterlater oss lett tilgjengelig i bebygde områder.
+
+```{r 5.5: Hvordan lage gif, eval=FALSE, include=FALSE}
+library(gganimate)
+library(ggspatial)
+
+nframes <- 75
+p <- foxes %>% 
+   slice(1:nframes) %>% 
+   mutate(frame = factor(seq_along(id), labels = as.character(datetime))) %>% 
+   ggplot(aes(colour = id)) + 
+     annotation_map_tile() + 
+     geom_sf() + 
+     transition_manual(frame) + 
+     ggtitle("{current_frame}")
+a <- animate(p, nframes = nframes, renderer = gifski_renderer())
+anim_save("reveanimasjon.gif")
+```
+

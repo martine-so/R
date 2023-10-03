@@ -1,0 +1,281 @@
+---
+title: "Fordypningsoppgave"
+author: "Martine Sørgård Olsen og Karin Mollatt"
+date: "2022-11-23"
+output: 
+  html_document: 
+    theme: flatly
+    code_folding: show
+    highlight: pygments
+---
+<style type="text/css"> body .main-container { max-width: 90%; } </style>
+
+### Innledning
+ 
+
+Alle mennesker har en tarmflora som utgjør en vesentlig rolle i fordøyelsen, fordi den gjør om mat til energi og øker næringsinntaket **(KILDE SML tarmflora)**. Tarmfloraen omhandler de bakterier og mikroorganismer som befinner seg i tarmen daglig. Gjennom DNA/RNA-sekvensering av avføringsprøver til mor og barn ved ulike tidspunkt er det blitt laget et datasett som i denne rapporten skal analyseres. I denne rapporten er det fokusert på dataene som er samlet inn tre måneder etter fødseslen. 
+
+Tidligere er det blitt gjort kjent at barn får en liknende tarmflora som voksne sin ved rundt 2 års alder **(KILDE rapport)**. Dette sier noe om utviklingen av den generelle tarmfloraen til barn. Det sier ingenting om sammenhengen mellom hvert mor-barn-par og om disse har en liknende tarmflora eller ikke. I denne rapporten skal det fokuseres på relasjonen mellom biologiske mor-barn-par og ikke-biogiske mor-barn-par. Nærmere  bestemt skal ulikheten og distansen mellom biologiske og ikke-biologiske par sammenlignes. Har biologiske mor-barn-parm mindre avsand og ulikhet enn ikke-biologiske? Og hvilken av metodene som benyttes er mest effektive? Dette skal gjøres ved hjelp av *Bray-Curtis* som måler ulikhet og funksjonen `UniFrac` som måler distanse.
+
+##### ***Bray-Curtis***
+
+Bray-Curtis en en metode innen statistikk som brukes til å beregne ulikhet ved to observasjoner. Metoden er oppkalt etter de to økologene John Roger Bray og John Thomas Curtis. 
+
+Formelen ser slik ut: 
+
+$$
+BC_{mc} = 1 - \frac{2C_{mc}}{S_m + S_c}
+$$
+
+Indexen $BC_{mc}$ er en verdi mellom 0 og 1 som sier noe om ulikhet. Om verdien er 0 er observasjonene identiske. Derimot om verdien er 1 er det liten til ingen likhet mellom observsjonene. 
+
+  $C_{mc}$ er summen av den minste verdien i observasjoner gjort i begge obervasjonene. 
+
+  $S_m$ er summen av alle observasjonene i `Mother`.
+
+  $S_c$ er summen av alle observasjonene i `Child`. 
+
+Orginalt er ofte bokstavene $i$ og $j$ brukt i formelen, men vi har valgt å benytte $c$ for child og $m$ for mother i denne rapporten. Da dette gir mer mening med tanke på verdiene vi regner ut. 
+
+**Link til wikipedia? Nei finn bedre kilde med samme formel:)**
+
+##### ***UniFrac***
+
+UniFrac står for 'unique fraction metric', og er et distansemål på den fylogenetiske avstanden mellom taxa i et fylogenetisk tre. Den tar med i beregningen at noen taxa er i samme familie, og derfor vil større ulikheter innad i en familie ikke påvirke sluttresultatet i like stor grad som om dette ikke hadde blitt inkludert **(KILDE unifrac)**.
+
+Rent teknisk ligger funksjonen `unifrac` i biblioteket `phyloseq`, men denne pakken finnes ikke i det "vanlige" CRAN-universet (Comprehensive R Archive Network). `phyloseq`-pakken ligger i et parallelt univers kalt Bioconductor, som er åpent software prosjekt for alle biologer. Det vil si at alle kan bidra med nye funksjoner og algoritmer til dette universet **(KILDE bioconductor)**. For å nå pakkene som ligger i Bioconductor, må universet [lastes ned](https://www.bioconductor.org/install/) manuelt.
+
+- Skriv litt om UniFrac
+
+- skissere det biologiske fenomenet 
+
+- variablene som er målt 
+
+- forsøksoppsett/ønsket sammenligning/hypotese 
+
+- hvordan dataene gjenspeiler biologien.
+ 
+### Metode
+
+- kort om hvordan dataene ble til 
+- utfyllende hvordan rådata er omvandlet for å tydeliggjøre biologiske sammenhenger (prøv gjerne ut statistikk hvis du har slik bakgrunn) 
+- beskrive rådatasettet, antall rever/bakterier osv.
+ 
+<span style="color: grey;font-size: 16px;"><i>Laster inn datasettet, og nødvendige pakker ved start.</i></span>
+ 
+```{r pakker og datasett, eval=FALSE, message=FALSE, warning=FALSE, include=FALSE}
+library(tidyverse)
+library(readxl)
+library(ggplot2)
+library(phyloseq)
+library(usedist)
+
+data <- read_excel("mor_barn_tid_tarmflora.xlsx")
+
+# Fjerner #-tegnene foran output
+knitr::opts_chunk$set(comment = "")
+
+# Suppress summarise info
+options(dplyr.summarise.inform = FALSE)
+```
+
+<span style="color: grey;font-size: 16px;"><i>Fjerner som ikke forekommer i noen observasjoner, da disse utgjør unødvendige beregninger.</i></span>
+
+```{r fjerner nullbakt, eval=FALSE, include=FALSE}
+# Velger ut bakteriearter som kun har nullverdier
+nullbakt <- data %>% 
+  select(where(function(x) is.numeric(x) && all(x == 0))) %>% 
+  names()
+nullbakt
+
+# Fjerner bakterier som ikke forekommer i noen observasjoner
+data <- data %>% 
+  select(-!!nullbakt)
+```
+
+```{r eval=FALSE, include=FALSE}
+# Lager et lite datasett som vi kan testkjøre koden på først.
+d_liten <- data %>%
+  group_by(MotherChildPairID) %>% 
+  filter(Timepoint == "3months") %>%
+  arrange(MotherChildPairID) %>% 
+  filter(n() == 2) %>% 
+  select(1:3, 10:20) %>%
+  ungroup %>% 
+  slice_head(n = 20) %>% 
+  mutate(Timepoint = factor(Timepoint, 
+                            levels = "3months"),
+         MotherChild = factor(MotherChild,
+                              levels = c("mother", "child")))
+```
+
+```{r filtrerer datasettet, eval=FALSE, include=FALSE}
+data_filtrert <- data %>%
+  group_by(MotherChildPairID) %>% 
+  filter(Timepoint == "3months") %>%
+  # Sorterer etter ID for å se parene enklere
+  arrange(MotherChildPairID) %>% 
+  # Beholder kun mor-barn-par, og ikke enslige mor/barn
+  filter(n() == 2) %>% 
+  # Gjør om variablene Timepoint og MotherChild til typen factor,
+  # og bruker levels til å angi den naturlige rekkefølgen
+  mutate(Timepoint = factor(Timepoint, 
+                            levels = "3months"),
+         MotherChild = factor(MotherChild,
+                              levels = c("mother", "child")))
+```
+
+#### Bray-Curtis
+
+```{r braycurtis funksjon, eval=FALSE, include=FALSE}
+bray_curtis <- function(df){
+  bc_index <- 1 - sum(apply(df, 2, function(x) 2*min(x))) / sum(rowSums(df))
+}
+```
+
+```{r implementere braycurtis, eval=FALSE, include=FALSE}
+# Lage en tom dataramme som skal inneholde BrayCurtis-indeksen
+columns <- c("mcp_ID", "BC_index")
+df <- data.frame(matrix(nrow = 0, ncol = length(columns)))
+colnames(df) <- columns
+
+# For å iterere over kun IDene i datasettet starter med 2 som indeks.
+for (i in 2:nrow(data_filtrert)){
+  if (data_filtrert$MotherChildPairID[i-1] == data_filtrert$MotherChildPairID[i]) {
+    bc <- bray_curtis(data_filtrert[(i-1):i, -(1:3)])
+    df <- df %>% 
+      add_row(mcp_ID = data_filtrert$MotherChildPairID[i], BC_index = bc)
+  } else {
+    next
+  }
+}
+```
+
+#### UniFrac
+
+```{r henter ut bakterier, eval=FALSE, include=FALSE}
+print_art <- data_filtrert %>%
+  gather(key = "art", value = "andel_individer",
+         -c(MotherChildPairID, MotherChild, Timepoint)) %>% 
+  ungroup %>% 
+  distinct(art)
+
+# Tom dataramme
+columns_print <- "art"
+df_print <- data.frame(matrix(nrow = 0, ncol = length(columns_print)))
+colnames(df_print) <- columns_print
+
+for (i in 1:nrow(print_art)){
+  sub = gsub("[.0-9]","", print_art$art[i])
+  df_print <- rbind(df_print, sub)
+}
+
+
+write.table(df_print, file = "bakterier", col.names = FALSE, row.names = FALSE, quote = FALSE)
+```
+
+
+```{r UniFrac, eval=FALSE, include=FALSE}
+sample_d <- sample_data(data_filtrert[, 1:3])
+taxa_counts <- otu_table(data_filtrert[, -(1:3)], taxa_are_rows = FALSE)
+phy_tree <- ape::read.tree("phyliptree.phy")
+physeq <- phyloseq(sample_d, taxa_counts, phy_tree)
+
+unifrac_w = UniFrac(physeq, weighted = TRUE )
+unifrac_uw = UniFrac(physeq, weighted = FALSE )
+```
+
+```{r usedist, eval=FALSE, include=FALSE}
+# Velger ut kun mor-barn-par
+oddetall <- sprintf("sa%i", ((0:(nrow(df)-1))*2)+1)
+partall <- sprintf("sa%i", ((1:nrow(df))*2))
+dist_unifrac_w <- dist_get(unifrac_w, oddetall, partall)
+dist_unifrac_uw <- dist_get(unifrac_uw, oddetall, partall)
+
+# Legger til verdiene i datarammen med Bray-Curtis indekser
+df <- cbind(df, dist_unifrac_w, dist_unifrac_uw)
+
+```
+
+```{r eval=FALSE, include=FALSE}
+# Funksjon som henter ut partall
+evens <- function(x) subset(x, x %% 2 == 0)
+odds <- function(x) subset(x, x %% 2 == 1)
+
+columns_dist <- "distanse"
+df_dist <- data.frame(matrix(nrow = 0, ncol = length(columns_dist)))
+colnames(df_dist) <- columns_dist
+
+matrix_uf_w <- as.matrix(unifrac_w)
+
+for (i in odds(0:(nrow(matrix_uf_w)))){
+  idx1 <- sprintf("sa%i", i)
+  idx2 <- sprintf("sa%i", evens(2:(nrow(matrix_uf_w))))
+  #print(idx2)
+  dist_w_ikkebio <- matrix_uf_w[idx1, idx2]
+  #df_dist <- rbind(df_dist, dist_w_ikkebio)
+  
+}
+```
+
+
+:::: {.columns}
+i disse kolonnene blanakab
+
+::: {.column width="33%"}
+```{r eval=FALSE, include=FALSE}
+df[1:49,]
+```
+
+:::
+
+::: {.column width="33%"}
+```{r eval=FALSE, include=FALSE}
+df[49:97,]
+```
+
+:::
+
+::: {.column width="33%"}
+```{r eval=FALSE, include=FALSE}
+df[98:145,]
+```
+
+:::
+
+::::
+
+
+### Resultat
+
+```{r Phylogenetic tree, eval=FALSE, fig.height=25, fig.width=35, include=FALSE}
+plot_tree(physeq, "treeonly", label.tips="taxa_names", text.size = 6, base.spacing = 0.05, title = 'Phylogenetic tree')
+```
+
+Under vises det phylogenetiske treet til datasettet som brukes i rapporten. Et fylogenetisk tre er et diagram som representerer slektskapet blandt organismer, her bakterier. Det vises da her tydelig hvilke bakterier som er nært beslektet. I likhet med trær har fylogenetiske trær røtter. Bildet under har ikke en bestemt art som `root`. Funksjonen  unifrac derimot setter en tilfeldig bakterie som root. Hvilken som settes som root vil ha noe å si for hvilke verdier man får ut. Det er vanlig å sette den minst beslektede arten som root. Dette siden distansen beregnes utifra root og aldri er større enn root. 
+(KILDE: Kahn academy) 
+
+
+
+- Tabeller/figurer med selvforklarende merking, effektivt/lesbart 
+- Setninger som påpeker det som skal tolkes i Diskusjon.
+
+### Diskusjon
+
+- Hva tror dere er den biologiske virkeligheten bak resultatene? Spekulasjon oppmuntres!
+- Hvilke nye spørsmål melder seg? 
+- Hvordan kan disse besvares?
+
+### Referanser
+KILDER:
+
+[1](https://www.datacamp.com/tutorial/intro-bioconductor)
+[2](https://www.bioconductor.org/install/)
+[3](https://www.khanacademy.org/science/ap-biology/natural-selection/phylogeny/a/phylogenetic-trees)
+[4](https://journals.asm.org/doi/10.1128/AEM.71.12.8228-8235.2005)
+[5](https://joey711.github.io/phyloseq/import-data.html)
+[6](https://www.ncbi.nlm.nih.gov/Taxonomy/CommonTree/wwwcmt.cgi)
+[7](https://sml.snl.no/tarmflora)
+[8](https://www.rdocumentation.org/packages/phyloseq/versions/1.16.2/topics/UniFrac)
+[9](https://en.wikipedia.org/wiki/Bray%E2%80%93Curtis_dissimilarity)
+

@@ -1,0 +1,435 @@
+---
+title: "Analyse av genuttrykk for gammastrålt gran"
+author: "Karin Mollatt og Martine Sørgård Olsen"
+date: "2022-11-17"
+output: 
+  prettydoc::html_pretty:
+    theme: cayman
+    highlight: github
+---
+<style type="text/css"> body .main-content { max-width: 90%; } </style>
+
+## **Innledning** 
+
+Hvordan påvirker radioaktiv stråling naturen og oss mennesker? Ikke minst, hvordan kan vi beskytte oss mot skadelige effekter av stråling? Disse spørsmålene stiller [CERAD](https://www.nmbu.no/en/services/centers/cerad), Senter for Fremragende Forskning ved NMBU, og i denne rapporten skal vi bruke en del av et datasett fra et eksperiment som omhandler radioaktiv stråling. Nærmere bestemt skal vi se på hvordan grantrær blir påvirket etter å ha blitt utsatt for gammastråling i ulik strålingsmengde.
+
+## **3** Utforsking av data
+
+<span style="color: grey;font-size: 15px;"><i>Laster inn datasettet, og nødvendige pakker ved start.</i></span>
+
+```{r 3 laster tidyverse, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(htmltools)
+library(vembedr)
+library(ggridges)
+library(pheatmap)
+
+# Setter chunk options til comment = "" for å fjerne #-tegnene slik at vi får en mer estetisk rapport
+knitr::opts_chunk$set(comment = "")
+
+# Suppress summarise info. Hindre dplyr i å klage om summarise groups
+options(dplyr.summarise.inform = FALSE)
+```
+
+```{r 3 last inn, message=FALSE}
+d <- read_tsv("data/gene_expression_readcounts.tsv")
+d
+```
+
+Kolonnenavnene inneholder strålingsmengde (`G0`, `G1`, `G10`, `G40`, `G100`) og replikatnummer (*1*, *2*, *3*, *4*), der strålingen angis i milligray per time (mG h^-1^). Det er blitt gjort målinger på fire forskjellige granspirer ved hver dose gammastråling, og i tabellen har vi 66 069 genprodukter som tilsvarer antall målinger (altså rader).
+
+#### Fra "bred form" til "lang form"
+
+<span style="color: grey;font-size: 15px;"><i>For å kunne jobbe med datasettet må vi endre formen til datarammen fra bred til lang.</i></span>
+
+```{r 3.1 bred til lang}
+d.lang <- d %>% 
+  # velger alle kolonnene unntatt den første
+  pivot_longer(cols = -1,
+               names_to = "plante",
+               values_to = "genuttrykk")
+d.lang
+```
+
+```{r 3.2 lang til bred, eval=FALSE, include=FALSE}
+d.lang %>% 
+  select(geneID, plante, genuttrykk) %>% 
+  pivot_wider(names_from = plante, values_from = genuttrykk)
+```
+
+#### Tolke ut informasjon fra tekststrenger
+
+<span style="color: grey;font-size: 15px;"><i>Nå skal vi dele opp plantekolonnen slik at vi får dosemengde og replikatnummer i to separate kolonner.</i></span>
+
+```{r 3.3 tolke info fra tekststrenger}
+d.lang.sep <- d.lang %>% 
+  separate(col = plante,
+           into = c("dose", "rep"),
+           sep = "-",
+           remove = FALSE) %>% 
+  # lager en ny kolonne som inneholder dosemengde
+  separate(col = dose,
+           # ignorer kolonnen som vil inneholde bokstaven G
+           into = c(NA, "mGy"),
+           # del på etter første posisjon
+           sep = 1,
+           # konverterer til integer
+           convert = TRUE)
+d.lang.sep
+```
+
+<span style="color: grey;font-size: 15px;"><i>Deretter viser vi antall replikater for hvert dosenivå sortert i stigende rekkefølge etter dose.</i></span>
+
+```{r 3.3 replikater og dosenivå}
+d.lang.sep %>% 
+  select(mGy, rep) %>%
+  # velger kun ut unike elementer
+  distinct() %>% 
+  group_by(mGy) %>% 
+  summarise(replikater = max(rep)) %>% 
+  # sorterer i stigende rekkefølge
+  arrange()
+
+```
+
+<span style="color: grey;font-size: 15px;"><i>Tallene for `genuttrykk` i `d` angir visstnok antall reads. Vi lager derfor en tabell som viser samlet antall reads for hver dose og replikat, og plotter denne tabellen.</i></span>
+
+```{r 3.3 antall reads, fig.height=3, fig.width=5}
+total_reads <- d.lang.sep %>% 
+  select(mGy, rep, genuttrykk) %>% 
+  group_by(mGy, rep) %>% 
+  summarise(reads = sum(genuttrykk))
+total_reads
+
+# Barplot av antall reads
+total_reads %>% 
+  # dividerer reads på 1 million, for mer estetisk y-akse
+  ggplot(mapping = aes(x = rep, y = reads/1000000)) + 
+  geom_bar(stat = "identity") + 
+  facet_grid(cols = vars(mGy)) + 
+  ylab("millioner reads") + xlab("replikater")
+```
+
+#### Hvor mange gener er det som har null genuttrykk for alle replikatene i minst én behandling?
+
+```{r 3.3 minst en null genuttrykk}
+minst_en_null <- d.lang.sep %>% 
+  group_by(geneID, mGy) %>% 
+  # lager en ny kolonne som inneholder en boolsk uttrykk
+      # TRUE dersom dosegruppen inneholder kun 0 genuttrykk. FALSE ellers.
+  summarise(zero_for_all = all(genuttrykk == 0)) %>% 
+  # filtrer ut de gruppene der minst én (any) av dosegruppene i genet har genuttrykk som er 0 (altså er TRUE) i alle replikater.
+  filter(any(zero_for_all == TRUE)) %>% 
+  select(geneID) %>% 
+  distinct
+
+# Antall gener (rader) som har null genuttrykk for alle replikater i minst én behandling
+nrow(minst_en_null)
+```
+
+Det er 19 423 gener som har null genuttrykk for alle replikater i minst én behandling.
+
+#### Hvor mange gener har 0 i alle behandlinger?
+
+```{r 3.3 null genuttrykk}
+null_gen <- d.lang.sep %>% 
+  group_by(geneID, mGy) %>% 
+  summarise(zero_for_all = all(genuttrykk == 0)) %>% 
+  # filtrer ut de gruppene der alle dosegruppene har 0 genuttrykk (altså er TRUE) i alle replikater.
+  filter(all(zero_for_all == TRUE)) %>% 
+  select(geneID) %>% 
+  distinct
+
+# Antall gener (rader) som har null genuttrykk
+nrow(null_gen)  
+```
+
+Det er 8113 gener som har 0 i alle behandlinger.
+
+#### Hva slags biologiske tolkninger kan vi gjøre om gener vi ikke kan måle genuttrykket til?
+
+Gener som vi ikke kan måle genuttrykket vil være "avslått" av transkripsjonsfaktorer. Det vil si at de ikke uttrykkes, fordi de ikke er bruk eller trengs.
+
+## **4** Normalisering av genuttrykksdata for variable datamengder per prøve (antall reads)
+
+```{r 4 les inn tpm, message=FALSE}
+tpm <- read_tsv("data/gene_expression_TPM.tsv")
+
+tpm.lang <- tpm %>% 
+  # velger alle kolonnene unntatt den første
+  pivot_longer(cols = -1,
+               names_to = "plante",
+               values_to = "genuttrykk") %>% 
+  separate(col = plante,
+           into = c("dose", "rep"),
+           sep = "-",
+           remove = FALSE) %>% 
+  separate(col = dose,
+           into = c(NA, "mGy"),
+           sep = 1,
+           convert = TRUE)
+tpm.lang
+```
+
+#### Hvilket gen har høyest målt genuttrykk i `tpm`?
+
+```{r 4 høyest målt genuttrykk}
+tpm.lang %>% 
+  arrange(desc(genuttrykk))
+```
+
+Genet *MA_183668g0010* har høyest målt genuttrykk med 34 598 TPM ved en strålingsmengde på 10 milligray på replikat 4.
+
+#### Hva er gjennomsnitt og median av genuttrykk i tabellen?
+
+```{r 4 gjennomsnitt og median}
+tpm.lang %>% 
+  summarise(gjennomsnitt = mean(genuttrykk),
+            median = median(genuttrykk))
+```
+
+Gjennomsnittet av genuttrykk i tabellen er 15.1 tpm, som vil si at dette er gjennomsnittlig antall *transcripts per million* for hvert gen. Medianen er 0.536 og er da tallet i midten. Det vil si at det midtre genuttrykket vil være 0.536 tpm.
+
+<span style="color: grey;font-size: 15px;"><i>Lager et histogram over variasjonen i  `genuttrykk` over hele `tpm.lang`-datarammen.</i></span>
+
+```{r 4 histogram, fig.height=4, fig.width=6, message=FALSE}
+tpm.lang %>%
+  ggplot(mapping = aes(x = genuttrykk)) + 
+  geom_histogram()
+```
+
+#### Hvilken biologisk tolkning kan vi gjøre av dette?
+
+Først og fremst observerer vi at histogrammet er ekstremt høyreskjevt, der det ser ut som alle verdiene ligger i de to første stolpene. Likevel går aksen over genuttrykk opptil og forbi 30 000 tpm. Det er fordi noen gener trenger mer av disse genenes genprodukt, da de er hyppigere brukt enn andre gener. Den høye stolpen til venstre representerer genuttrykk som er null, som er gener som ikke trengs akkurat der og da. Disse er skrudd av, og det kan variere over hvilke vev de blir målt på, tidspunktet de blir målt og forutsetningene under målingen.
+
+<span style="color: grey;font-size: 15px;"><i>Siden genuttrykk varierer så mye bør vi bruke logaritmer til å sammenlikne dem. For å ta med nullverdiene i plottet bruker vi et vanlig “tjuvtriks” der vi legger til et lite tall på alle observasjonene.</i></span>
+
+```{r 4 log10tpm, fig.height=3, fig.width=6}
+# Legger til en ny kolonne som er tierlogaritmen til genuttrykk pluss en
+tpm.lang$log10tpm <- (log10(tpm.lang$genuttrykk + 1))
+tpm.lang
+
+# Histogram med fordeling av log10tpm
+tpm.lang %>% 
+  ggplot(mapping = aes(x = log10tpm)) +
+  geom_histogram(bins = 100)
+```
+
+## **5** Kvalitetskontroll av data
+
+```{r 5.1.2 PCA prøvekjøring}
+tpm.orig <- tpm
+tpm.lang.orig <- tpm.lang
+
+# Gjennomsnitt
+gjsn.log10tpm <- tpm.lang %>% 
+  group_by(geneID) %>% 
+  # Gjennomsnitt over alle doser og replikater for et gitt gen
+  summarise(gjsn = mean(log10tpm))
+gjsn.log10tpm
+
+# Varians
+var.log10tpm <- tpm.lang %>% 
+  group_by(geneID, mGy) %>% 
+  # Gjennomsnitt over de fire replikatene for en gitt kombinasjon av gen og dose
+  summarise(gjsn = mean(log10tpm)) %>% 
+  # Varians i gjennomsnitt over de fem dosene
+  summarise(varians = var(gjsn))
+var.log10tpm
+
+# Setter sammen de kolonnene i de ulike tabellene utifra deres felles genID 
+gen.stats <- inner_join(gjsn.log10tpm, var.log10tpm, by = "geneID")
+gen.stats
+
+# Tar først topp 90% av gener mhp totalgjennomsnittet, og deretter topp 100 mhp varians i gjennomsnitt mellom behandlinger
+gen.100 <- gen.stats %>% 
+  top_frac(0.9, gjsn) %>% 
+  top_n(100, varians) %>% 
+  arrange(desc(varians))
+gen.100
+```
+
+```{r 5.1.2 midlertidig chunk, eval=FALSE, include=FALSE}
+tpm <- filter(tpm.orig, geneID %in% gen.100$geneID)
+tpm.lang <- filter(tpm.lang.orig, geneID %in% gen.100$geneID)
+```
+
+```{r 5.1.3 PCA}
+tpm.mat <- tpm %>% 
+  column_to_rownames("geneID") %>% 
+  as.matrix
+log10tpm.mat <- log10(tpm.mat + 1)
+
+# Kjør en prinsipalkomponentanalyse på en matrise der
+# - planter er rader (observasjoner)
+# - gener er kolonner (variabler)
+# - verdier er log10(tpm + 1)
+pca <- prcomp(t(log10tpm.mat))
+
+# Hent ut "scores", dvs plasseringen av hver plante langs de to viktigste nye koordinataksene
+scores <- pca$x %>% 
+  as_tibble(rownames = "plante")
+
+# Tabell med dose og replikat for hver plante-id
+metadata <- tpm.lang %>% 
+  select(plante, mGy, rep) %>% 
+  distinct
+
+# Setter sammen de kolonnene i de ulike tabellene utifra deres felles plante-id
+pca.meta <- inner_join(metadata, scores, by = "plante")
+
+# Dataramme klar til plotting og fargelegging
+pca.meta
+```
+
+```{r 5.1.4 PCA plott}
+pca.meta %>% 
+  ggplot(mapping = aes(x = PC1, y = PC2, color = ordered(mGy), label = rep)) +
+  geom_point(size = 7) +
+  # legger til replikat tall som label på punktene
+  geom_text(color = "white", size = 4) +
+  # bestemmer fargene som skal brukes på plottet 
+  scale_color_manual(values=c("#D8D4D8", "#D0DB97", "#69B578",
+                              "#3A7D44","#1B3724"))
+```
+
+### Klyngeanalyse med heatmap
+
+```{r 5.2 klyngeanalyse med heatmap, fig.width=12}
+# Topp 5000 gener med mest variasjon
+gen.5000 <- gen.stats %>% 
+  top_frac(0.9, gjsn) %>% 
+  top_n(5000, varians) %>% 
+  arrange(desc(varians))
+
+tpm.cl <- tpm.orig %>% 
+  filter(geneID %in% gen.5000$geneID)
+tpm.lang.cl <- tpm.lang.orig %>% 
+  filter(geneID %in% gen.5000$geneID)
+
+# Parameteren scale=row gjør at fargene i alle radene er skalert relativt til gjennomsnittet til den raden. Det vil si at man ikke kan sammenlikne farger på ulike rader. Dere kan kun se hvordan genuttrykket varierer mellom prøver innen samme gen. 
+
+tpm.cl %>% 
+  select(-geneID) %>% 
+  magrittr::add(1) %>% # Pseudotallet vårt
+  log10() %>% 
+  pheatmap(scale = "row", clustering_distance_rows = 'correlation',
+           show_rownames = F)
+```
+
+### Tolkning av PCA og klyngeanalyseresultater
+
+#### Hva viser plottene i forhold til prøver som oppfører seg mistenkelig?
+Punkter som ligger nær hverandre i PCA-plottet er i samme klynge og har relativt like bånd i heatmappet. 
+
+`G10-3` og `G0-2` skiller seg ut fra de andre med tanke på de er i en helt egen klynge, og de oppfører seg som avvikere i PCA-plottet. Det kan vi også se i heatmappet, da disse to er i en helt egen gren i klyngehierarkiet (sett vertikalt). I tillegg kan man se i disse to prøvene at de har to felles samlinger bånd med gener som er rød, som vil si at de egentlig da skal være veldig oppregulert. Siden heatmappet vårt er rad-skalert betyr det at vi kun kan se på variasjon i genuttrykk mellom prøver innen samme gen. Altså det vil si at vi da ikke kan sammenlikne flere gener i samme prøve, og derfor er det mistenkelig at *begge* disse prøvene har store, samlede røde seksjoner blant båndene sine. Det tyder på at prøvene for eksempel kan være kontaminert eller at sekvenseringssenteret har feilet på en eller annen måte.
+
+#### Vil du tro at det er noen få eller veldig mange gener som gjør at noen prøver skiller seg ut?
+Siden klyngehierarkiet har så mange og tette grener at man ikke kan se strukturen, betyr det at vi opererer med utrolig mange gener. Det vet vi også fra datasettet som inneholder over 60 000 gener. Derfor tror vi at det er veldig mange gener som gjør at for eksempel `G10-3` og `G0-2` skiller seg ut. En annen ting som bygger opp under denne teorien er størrelsen på båndene i heatmappet, som er veldig smale og en stor rød seksjon vil da inneholde veldig mange gener.
+
+#### Bør vi fjerne noen prøver fra analysene før vi går videre med å studere hvilke gener som reagerer på strålingsskade? I så fall hvorfor/hvorfor ikke?
+Vår vurdering med noe bakgrunn fra statistikk er at vi bør fjerne avvikerne, fordi de er ulike fra resten av prøvene. Det vil gi et datasett som er mer representativt for helheten.
+
+## **6** Analyse av differensielt uttrykte gener
+
+#### Hypoteser
+- Desto mer stråling granplanten blir utsatt for, desto mer skade vil påføres. Likevel bør det være en grense der cellene er for ødelagte til å kunne forverres ytterligere.
+
+```{r 6 DEG table, fig.height=4, fig.width=6}
+DEGtable <- read_delim("data/DEGtable.tsv", delim = '\t', col_types = cols())
+
+DEGtable_signifikante <- DEGtable %>% 
+  filter(padj<0.05) %>% 
+  select(c('contrast', 'geneID') )
+  
+barplot(sort(table(DEGtable_signifikante$contrast)), 
+        ylab='Antall differensielt uttrykte gener', xlab='Strålingsdose')
+```
+
+På barplottet kan vi se en tilnærmet eksponentiell økning av differensielt uttrykte gener desto høyere strålingsdosen er. Dersom vi hadde påført sterkere stråling burde denne kurven flate seg ut da man kan tenke seg at det vil være en grense for hvor skadet genet kan bli, og dermed også hvor høy variansen kan bli.
+
+```{r 6 justering pverdi}
+# Hent ut kun de to første kolonnene i tabellen over
+
+d <- tpm %>% 
+  as_tibble %>% 
+  pivot_longer(cols = -geneID, names_to = "sample", values_to = "tpm") %>%
+  separate(sample, into = c("gray", "rep"), sep = "-") %>% 
+  # trekker ut rader med gener som KUN er statistisk forskjellig fra kontroll
+  filter(geneID %in% DEGtable_signifikante$geneID) %>% 
+  group_by(geneID, gray) %>% 
+  summarise(mean_tpm = mean(tpm)) %>% 
+  mutate(gray = as.numeric(str_replace(gray, "G", "")))
+
+# d er nå en tabell med gener som endrer uttrykk under forskjellig dose behandling
+
+fc <- d %>% 
+  spread(gray, mean_tpm) %>% 
+  mutate(G1fc = log10((1 + `1`) / (1 + `0`)),
+         G10fc = log10((1 + `10`) / (1 + `0`)),
+         G40fc = log10((1 + `40`) / (1 + `0`)),
+         G100fc = log10((1 + `100`) / (1 + `0`)))
+```
+
+#### Hvor mange differensielt uttrykte gener har vi? (`padj`< 0.05)
+
+```{r 6 antall diff uttrykte gener}
+nrow(d)
+```
+
+Vi har 285 differensielt uttrykte gener som da skiller seg ut fra kontrollprøven. Statistisk sett vil dette si at de har en p-verdi som er lavere enn signifikansnivået på 5%. Dersom man kommer i en slik situasjon innenfor statistikk, vil man forkaste nullhypotesen (om man gjennomfører hypotesetesting). I vårt tilfelle kunne nullhypotesen vært ingen markant endring (reaksjon) i genuttrykk.
+
+#### Reagerer de fleste genene som er differensielt uttrykt med store uttrykksendringer?
+
+```{r 6 reaksjon, fig.height=3, fig.width=6, message=FALSE, warning=FALSE}
+fc %>% 
+  select(c("G1fc", "G10fc", "G40fc", "G100fc")) %>% 
+  pivot_longer(cols = c("G1fc", "G10fc", "G40fc", "G100fc"),
+               names_to = "fold_change") %>% 
+  ggplot(mapping = aes(x = value, fill = fold_change)) +
+  geom_histogram()
+```
+
+De fleste genene som er differensielt uttrykt med store uttrykksendringer ser ut til å reagere. De fleste ligge på en verdi mellom -1 og litt over 1. 
+
+#### Gir ulike strålingsbehandlinger ulikt utslag på hvor mange gener som blir differensielt uttrykt?
+
+```{r 6, fig.height=4, fig.width=7, message=FALSE, warning=FALSE}
+fc %>% 
+  select(geneID, contains("fc")) %>% 
+  gather(dose, logfc, -geneID) %>% 
+  mutate(dose = factor(dose, levels = c("G1fc", "G10fc", "G40fc", "G100fc"))) %>%
+  ggplot(aes(x = logfc, y=dose, fill = dose)) + 
+    geom_density_ridges(alpha = 0.5) +
+    scale_x_continuous(limits = c(-0.25, 0.25))
+```
+
+### Genfunksjon: ConGenIE
+
+```{r}
+oppregulert_G100 <- DEGtable_signifikante %>% 
+  filter(contrast == "G100") %>% 
+  distinct(geneID)
+
+write.table(oppregulert_G100, file = "Gener", col.names = FALSE, row.names = FALSE, quote = FALSE)
+```
+
+**Hva slags funksjoner har disse genene? Gir resultatene mening med tanke på det vi vet om strålingsskade?**
+
+Når vi ser nærmere på genene i ConGenIE finner vi fagbegreper som:
+
+- Poly(ADP-ribose) polymerase catalytic domain
+- ukjente proteiner
+- mye som har med transport i celler å gjøre. 
+- golgi-apparatet
+- cellevegg
+- ATp binding
+- plasmamembran
+- cellevegg 
+- DNA replikasjon
+  
+Alt dette har med forskjellige prosesser i cellen å gjøre. Mange av dem har med transport innad eller inn og ut av cellen å gjøre, som cellevegg, golgi-apparatet, ATP og ADP. 
+
+ [*Store Norske Leksikon*](https://sml.snl.no/str%C3%A5leskade) sier dette om strålesskade: *"Ved lave til moderate stråledoser skyldes skaden først og fremst spesielle kjemiske reaksjoner i arvestoffet (DNA) i de bestrålte cellene. Ved svært høye stråledoser kan også ioniserende skade på proteiner og andre kjemiske stoffer i cellene komme raskt og gi livstruende organskade."*
+
+Med vår litt begrensede kunnskap innen cellebiologi og stråling vil vi si at resultatene gir mening. Økning i ATP vil si at det produseres mer energi for å kunne drifte flere prosesser i cellene. Om proteiner kan ta skade gir det mening at gener involvert med ukjente proteiner øker. 
